@@ -1,0 +1,225 @@
+---
+title: "STAT195 -- Project"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(plsRglm)
+library(glmnet)
+library(ROCR)
+library(poisbinom)
+library(pROC)
+```
+
+## 2010 - 2016 Data for Training
+```{r}
+clean.data <- function(data) {
+    data <- data  %>% select(state = Cand_Office_St, dist = Cand_Office_Dist_x, party = Cand_Party_Affiliation,Year,vote = recent_presidential_vote, bachelor = percent_bachelor_or_above, gov_party, share = Party_Previous_Vote_Share, Incumbent, minority = minority_percentage, gender = Gender, approval = Presidential_Approval_Rating, same = Same_Party_As_President, seat_transition, income = Median_Income, name = name_commonness, primary_vote = Primary.Vote.Percent, labor = labor_force, raised = Raised, spent = Spent, winner = `GE.WINNER.INDICATOR`) %>% filter(!is.na(dist) & !is.na(minority))
+  
+  data$winner[is.na(data$winner)] <- "L"
+  data$primary_vote[is.na(data$primary_vote)] <- 0
+  data$raised[is.na(data$raised)] <- 0
+  data$spent[is.na(data$spent)] <- 0
+  data$vote[is.na(data$vote)] <- 0
+  data$gov_party[is.na(data$gov_party)] <- "unk"
+  data$seat_transition[is.na(data$seat_transition)] <- 9
+  data$party[is.na(data$party)] <- "unk"
+  data$share[is.na(data$share)] <- 0
+  
+  data$primary_vote <- as.numeric(data$primary_vote)
+  
+  return(data)
+}
+
+data.all <- read.csv("./STAT195/Agg2010-2016.csv", stringsAsFactors = F)
+data.all <- clean.data(data.all)
+data.all$primary_vote[is.na(data.all$primary_vote)] <- 0
+impute.groups <- data.all %>% group_by(Year, state, party) %>% summarize(approval = mean(approval, na.rm=T), income=mean(income, na.rm=T))
+    
+# impute missing approval
+data.all$approval[is.na(data.all$approval)] <- apply(data.all[is.na(data.all$approval),], 1, function(x){
+  impute.groups$approval[which(impute.groups['state'] == x['state'] & impute.groups['party'] == x['party'] & impute.groups['Year'] == x['Year'])]
+  })
+  
+# impute missing income by using the mean of state income for the party
+data.all$income[is.na(data.all$income)] <- apply(data.all[is.na(data.all$income),], 1, function(x){
+    impute.groups$income[which(impute.groups['state'] == x['state'] & impute.groups['party'] == x['party'] & impute.groups['Year'] == x['Year'])]
+  })
+
+```
+
+## 2018 data to be used for prediction
+```{r}
+d2018 <- read_csv("./STAT195/Agg2018-1.csv")
+d2018 <- d2018 %>% select(state = Cand_Office_St, dist = Cand_Office_Dist_x, party = Cand_Party_Affiliation,Year,vote = recent_presidential_vote, bachelor = percent_bachelor_or_above, gov_party, share = Party_Previous_Vote_Share, Incumbent, minority = minority_percentage, gender = Gender, approval = Presidential_Approval_Rating, same = Same_Party_As_President, seat_transition, income = Median_Income, name = name_commonness, primary_vote = Primary.Vote.Percent, labor = labor_force, raised = Raised, spent = Spent,cand = Cand_Name) %>% filter(!is.na(dist) & !is.na(minority))
+
+d2018$primary_vote[is.na(d2018$primary_vote)] <- 0
+d2018$raised[is.na(d2018$raised)] <- 0
+d2018$spent[is.na(d2018$spent)] <- 0
+d2018$vote[is.na(d2018$vote)] <- 0
+d2018$gov_party[is.na(d2018$gov_party)] <- "unk"
+d2018$seat_transition[is.na(d2018$seat_transition)] <- 9
+d2018$party[is.na(d2018$party)] <- "unk"
+d2018$share[is.na(d2018$share)] <- 0
+
+
+impute.groups <- d2018 %>% group_by(Year, state, party) %>% summarize(approval = mean(approval), income=mean(income))
+
+# impute missing approval
+d2018$approval[is.na(d2018$approval)] <- apply(d2018[is.na(d2018$approval),], 1, function(x){
+  impute.groups$approval[which(impute.groups['state'] == x['state'] & impute.groups['party'] == x['party'] & impute.groups['Year'] == x['Year'])[1]]
+  })
+  
+# impute missing income by using the mean of state income for the party
+d2018$income[is.na(d2018$income)] <- apply(d2018[is.na(d2018$income),], 1, function(x){
+    impute.groups$income[which(impute.groups['state'] == x['state'] & impute.groups['party'] == x['party'] & impute.groups['Year'] == x['Year'])]
+  })
+
+# clean gender
+d2018$gender[is.na(d2018$gender)] <- round(mean(d2018$gender,na.rm=T))
+cands <- d2018$cand
+
+#create training data
+training_data <- data.all
+training_data$winner[!training_data$winner == "W"] <- 0
+training_data$winner[training_data$winner == "W"] <- 1
+training_data$gov_party[training_data$gov_party == "REP"] <- 1
+training_data$gov_party[training_data$gov_party == "DEM"] <- 0
+training_data$gov_party[!training_data$gov_party == 1 & !training_data$gov_party == 0] <- round(mean(as.numeric(training_data$gov_party[training_data$gov_party == 1 | training_data$gov_party == 0])))
+training_data$gov_party <- as.numeric(training_data$gov_party)
+training_data$party[!(training_data$party == "REP" | training_data$party == "DEM")] <- "OTH" 
+# training_data <- data.frame(training_data,dummy.code(training_data$party)) ??
+training_data$same <- as.integer(as.logical(training_data$same)) 
+training_data <- training_data %>% select(-c(party,Year))
+# training_data <- data.frame(state = training_data$state, apply(training_data[,-1],2, as.numeric))
+
+training_data$labor <- as.numeric(training_data$labor)
+training_data$primary_vote <- as.numeric(training_data$primary_vote)
+
+#Create test data
+test_data <- d2018
+test_data$gov_party[test_data$gov_party == "REP"] <- 1
+test_data$gov_party[test_data$gov_party == "DEM"] <- 0
+test_data$gov_party[!test_data$gov_party == 1 & !test_data$gov_party == 0] <- round(mean(as.numeric(test_data$gov_party[test_data$gov_party == 1 | test_data$gov_party == 0])))
+test_data$gov_party <- as.numeric(test_data$gov_party)
+test_data$party[!(test_data$party == "REP" | test_data$party == "DEM")] <- "OTH" 
+# test_data <- data.frame(test_data,dummy.code(test_data$party))
+test_data$same <- as.integer(as.logical(test_data$same)) 
+test_data <- test_data %>% select(-c(party,Year))
+# test_data <- data.frame(state = test_data$state, apply(test_data[,-1],2, as.numeric))
+
+
+```
+
+## Prediction with elastic net logistic regression
+```{r}
+# split into training and test
+index.tr <- sample(nrow(training_data), nrow(training_data)*0.8)
+
+tr <- training_data[index.tr,]
+val <- training_data[-index.tr,]
+
+X_train <- tr %>% select(-c(winner, state, dist))
+X_train <- as.matrix(X_train)
+X_train[is.na(X_train)] <- 0
+y_train <- tr %>% select(winner)
+y_train <- as.integer(y_train$winner)
+X_val <- val %>% select(-c(winner, state, dist))
+X_val <- as.matrix(X_val)
+X_val[is.na(X_val)] <- 0
+y_val <- val %>% select(winner)
+y_val <- as.integer(y_val$winner)
+
+# Train glmnet for prediction
+glmnet.Training.CV  <-  cv.glmnet(X_train, y_train,
+                                  nfolds=10,alpha=0.5,family="binomial")
+
+lambda.glmnet.Training  <-  glmnet.Training.CV$lambda.min 
+# print(lambda.glmnet.Training)
+
+# calculate the coefficients at the minimum lambda value
+glmnet.coef  <- coef(glmnet.Training.CV, s=lambda.glmnet.Training)
+
+# write out the coefficients
+# write.table(as.matrix(glmnet.coef), file='coefficients.csv', col.names = F, sep="\t")
+neg.predictors <- sort(glmnet.coef[which(glmnet.coef[,1] != 0),])
+pos.predictors <- sort(glmnet.coef[which(glmnet.coef[,1] != 0),], decreasing = T)
+
+pred.test <- glmnet::predict.cv.glmnet(glmnet.Training.CV, X_val, s = lambda.glmnet.Training, type = "class")
+pred.test <- cbind(as.numeric(pred.test), y_val)
+acc <- sum(pred.test[,1] == pred.test[,2]) / nrow(pred.test)
+```
+
+## Plotting the CV Results for Lambda
+```{r}
+plot(glmnet.Training.CV)
+```
+
+## Plotting the AUC for the validation data
+```{r}
+preds <- predict(glmnet.Training.CV, newx = X_val, type = 'response')
+# Calculate true positive rate and false positive rate on the prediction object
+perf <- performance(prediction(preds, y_val), 'tpr', 'fpr' )
+roc_obj <- roc(y_val, preds)
+auc.pred <- auc(roc_obj)
+
+plot(perf,colorize=FALSE, col="black") # plot ROC curve
+lines(c(0,1),c(0,1),col = "gray", lty = 4 )
+text(0.5, 0.5, sprintf("AUC = %0.4f", auc.pred))
+```
+
+
+## Predict 2018 election results
+```{r}
+X_test <- test_data
+X_test <- X_test %>% select(-c(state, dist, cand))
+X_test <- as.matrix(X_test)
+
+pred.2018 <- glmnet::predict.cv.glmnet(glmnet.Training.CV, X_test, s = lambda.glmnet.Training, type = 'response')
+```
+
+### Outputting results
+```{r}
+results <- data.frame(d2018, pred.2018)
+colnames(results)[length(colnames(results))] <- 'pred'
+
+res <- results %>% 
+  group_by(state,dist) %>% 
+  filter(pred == max(pred)) %>% 
+  arrange() %>%
+  select(state, dist, cand, party, pred)
+
+write.csv(res,"Peter_Harry_final_predictions.csv")
+```
+
+## Using poisson probability distribution to calculate majority party probabilities
+```{r}
+prob.rep <- results %>% 
+  filter(party == "REP") %>%
+  group_by(state,dist) %>% 
+  filter(pred == max(pred)) %>% 
+  arrange() %>%
+  select(state, dist, cand.rep = cand, prob.rep = pred)
+
+prob.demo <- results %>% 
+  filter(party == "DEM") %>%
+  group_by(state,dist) %>% 
+  filter(pred == max(pred)) %>% 
+  arrange() %>%
+  select(state, dist, cand.demo = cand, prob.demo = pred)
+
+joint.probs <- prob.demo %>% 
+  left_join(prob.rep) %>% 
+  mutate(sum.prob = prob.rep + prob.demo) %>%
+  mutate(prob.rep = prob.rep / sum.prob, prob.demo = prob.demo / sum.prob)
+
+joint.probs <- joint.probs[complete.cases(joint.probs),]
+
+demo.maj <- ppoisbinom(nrow(joint.probs)/2, joint.probs$prob.demo, lower_tail = F)
+rep.maj <- ppoisbinom(nrow(joint.probs)/2, joint.probs$prob.rep, lower_tail = F)
+
+print(c("Democratic Majority" = demo.maj, "Republican Majority" = rep.maj))
+```
+
