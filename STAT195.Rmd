@@ -13,6 +13,11 @@ library(poisbinom)
 library(pROC)
 ```
 
+```{r}
+set.seed(20181105)
+```
+
+
 ## 2010 - 2016 Data for Training
 ```{r}
 clean.data <- function(data) {
