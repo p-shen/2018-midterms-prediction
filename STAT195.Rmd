@@ -103,6 +103,13 @@ training_data <- training_data %>% select(-c(party,Year))
 training_data$labor <- as.numeric(training_data$labor)
 training_data$primary_vote <- as.numeric(training_data$primary_vote)
 
+training_data$gov_party <- as.factor(training_data$gov_party)
+training_data$Incumbent <- as.factor(training_data$Incumbent)
+training_data$gender <- as.factor(training_data$gender)
+training_data$same <- as.factor(training_data$same)
+training_data$seat_transition <- as.factor(training_data$seat_transition)
+
+
 #Create test data
 test_data <- d2018
 test_data$gov_party[test_data$gov_party == "REP"] <- 1
@@ -115,6 +122,15 @@ test_data$same <- as.integer(as.logical(test_data$same))
 test_data <- test_data %>% select(-c(party,Year))
 # test_data <- data.frame(state = test_data$state, apply(test_data[,-1],2, as.numeric))
 
+test_data$gov_party <- as.factor(test_data$gov_party)
+test_data$Incumbent <- as.factor(test_data$Incumbent)
+test_data$gender <- as.factor(test_data$gender)
+test_data$same <- as.factor(test_data$same)
+test_data$seat_transition <- as.factor(test_data$seat_transition)
+test_data$winner <- 0
+
+xfactors.test <- model.matrix(winner ~ gov_party + Incumbent + gender + same + seat_transition, test_data)
+X_test <- as.matrix(data.frame(test_data %>% select(-c(cand, winner, state, dist,gov_party, Incumbent, gender, same, seat_transition)), xfactors.test))
 
 ```
 
@@ -123,19 +139,17 @@ test_data <- test_data %>% select(-c(party,Year))
 # split into training and test
 index.tr <- sample(nrow(training_data), nrow(training_data)*0.8)
 
-tr <- training_data[index.tr,]
-val <- training_data[-index.tr,]
+xfactors <- model.matrix(winner ~ gov_party + Incumbent + gender + same + seat_transition, training_data)
+processed.data <- data.frame(training_data %>% select(-c(state, dist,gov_party, Incumbent, gender, same, seat_transition)), xfactors)
 
-X_train <- tr %>% select(-c(winner, state, dist))
-X_train <- as.matrix(X_train)
+X_train <- as.matrix(processed.data[index.tr,] %>% select(-c(winner)))
 X_train[is.na(X_train)] <- 0
-y_train <- tr %>% select(winner)
-y_train <- as.integer(y_train$winner)
-X_val <- val %>% select(-c(winner, state, dist))
-X_val <- as.matrix(X_val)
+y_train <- processed.data[index.tr,] %>% select(winner)
+y_train <- as.factor(y_train$winner)
+X_val <- as.matrix(processed.data[-index.tr,] %>% select(-c(winner)))
 X_val[is.na(X_val)] <- 0
-y_val <- val %>% select(winner)
-y_val <- as.integer(y_val$winner)
+y_val <- processed.data[-index.tr,] %>% select(winner)
+y_val <- as.factor(y_val$winner)
 
 # Train glmnet for prediction
 glmnet.Training.CV  <-  cv.glmnet(X_train, y_train,
@@ -162,6 +176,10 @@ acc <- sum(pred.test[,1] == pred.test[,2]) / nrow(pred.test)
 plot(glmnet.Training.CV)
 ```
 
+```{r}
+plot(glmnet.Training.CV$glmnet.fit)
+```
+
 ## Plotting the AUC for the validation data
 ```{r}
 preds <- predict(glmnet.Training.CV, newx = X_val, type = 'response')
@@ -178,9 +196,7 @@ text(0.5, 0.5, sprintf("AUC = %0.4f", auc.pred))
 
 ## Predict 2018 election results
 ```{r}
-X_test <- test_data
-X_test <- X_test %>% select(-c(state, dist, cand))
-X_test <- as.matrix(X_test)
+X_test[is.na(X_test)] <- 0
 
 pred.2018 <- glmnet::predict.cv.glmnet(glmnet.Training.CV, X_test, s = lambda.glmnet.Training, type = 'response')
 ```
@@ -226,5 +242,11 @@ demo.maj <- ppoisbinom(nrow(joint.probs)/2, joint.probs$prob.demo, lower_tail = 
 rep.maj <- ppoisbinom(nrow(joint.probs)/2, joint.probs$prob.rep, lower_tail = F)
 
 print(c("Democratic Majority" = demo.maj, "Republican Majority" = rep.maj))
+```
+
+
+```{r}
+coefs.out <- data.frame(names(pos.predictors), pos.predictors)
+write.csv(coefs.out, "~/preds.csv")
 ```
 
