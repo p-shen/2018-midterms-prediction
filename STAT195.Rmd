@@ -208,11 +208,19 @@ colnames(results)[length(colnames(results))] <- 'pred'
 
 res <- results %>% 
   group_by(state,dist) %>% 
-  filter(pred == max(pred)) %>% 
+  top_n(1, pred) %>% 
   arrange() %>%
-  select(state, dist, cand, party, pred)
+  select(state, dist, cand, party, `prob`=pred)
 
-write.csv(res,"Peter_Harry_final_predictions.csv")
+res$state_dist <- apply(res, 1, function(x){
+  paste(x['state'], x['dist'])
+})
+
+n_occur <- data.frame(table(res$state_dist))
+res <- res[-167,]
+res <- res[-368,]
+
+write.csv(res[,c('state_dist', 'cand', 'prob')],"Peter_Harry_final_predictions.csv", row.names = F)
 ```
 
 ## Using poisson probability distribution to calculate majority party probabilities
@@ -249,4 +257,6 @@ print(c("Democratic Majority" = demo.maj, "Republican Majority" = rep.maj))
 coefs.out <- data.frame(names(pos.predictors), pos.predictors)
 write.csv(coefs.out, "~/preds.csv")
 ```
+
+$$Pr(G=1 \mid X = x) = \frac{e^{\beta_0 + \beta^Tx}}{1+e^{\beta_0 + \beta^Tx}}$$
 
